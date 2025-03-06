@@ -79,15 +79,15 @@ module.exports = function (fileInfo, api) {
   // Remove destructured queries from render calls
   root
     .find(j.VariableDeclarator, {
-      id: {
-        type: 'ObjectPattern',
+      id: { type: 'ObjectPattern' },
+      init: {
+        type: 'CallExpression',
+        callee: { name: (name) => name !== 'within' },
       },
     })
     .filter((path) => {
-      return (
-        path.node.init &&
-        path.node.init.type === 'CallExpression' &&
-        path.node.init.callee.name.startsWith('renderWith')
+      return path.node.id.properties.some((property) =>
+        methodsToMigrate.includes(property.key.name)
       );
     })
     .forEach((path) => {
