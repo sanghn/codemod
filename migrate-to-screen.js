@@ -1,5 +1,10 @@
 module.exports = function (fileInfo, api) {
   const j = api.jscodeshift;
+
+  if (!/\.(spec|test)\.(js|ts)x?$/.test(fileInfo.path)) {
+    return fileInfo.source;
+  }
+
   const root = j(fileInfo.source);
 
   const methodsToMigrate = [
@@ -53,7 +58,7 @@ module.exports = function (fileInfo, api) {
     'queryByTitle',
   ];
 
-  let needScreenImport = false;
+  let migrationAvailable = false;
 
   methodsToMigrate.forEach((methodName) => {
     root
@@ -64,7 +69,7 @@ module.exports = function (fileInfo, api) {
         },
       })
       .replaceWith((path) => {
-        needScreenImport = true;
+        migrationAvailable = true;
 
         const screenIdentifier = j.identifier('screen');
         const memberExpression = j.memberExpression(
@@ -75,6 +80,8 @@ module.exports = function (fileInfo, api) {
         return j.callExpression(memberExpression, path.node.arguments);
       });
   });
+
+  if (!migrationAvailable) return fileInfo.source;
 
   // Remove destructured queries from render calls
   root
@@ -110,43 +117,41 @@ module.exports = function (fileInfo, api) {
       }
     });
 
-  if (needScreenImport) {
-    // Ensure 'screen' is imported from '@testing-library/react'
-    const testingLibraryImport = root.find(j.ImportDeclaration, {
-      source: {
-        value: '@testing-library/react',
+  // Ensure 'screen' is imported from '@testing-library/react'
+  const testingLibraryImport = root.find(j.ImportDeclaration, {
+    source: {
+      value: '@testing-library/react',
+    },
+  });
+
+  if (testingLibraryImport.size() > 0) {
+    // Import exists, check if 'screen' is imported
+    const screenImport = testingLibraryImport.find(j.ImportSpecifier, {
+      imported: {
+        name: 'screen',
       },
     });
 
-    if (testingLibraryImport.size() > 0) {
-      // Import exists, check if 'screen' is imported
-      const screenImport = testingLibraryImport.find(j.ImportSpecifier, {
-        imported: {
-          name: 'screen',
-        },
-      });
+    if (screenImport.size() === 0) {
+      // 'screen' is not imported, add it
+      testingLibraryImport
+        .get()
+        .node.specifiers.push(j.importSpecifier(j.identifier('screen')));
+    }
+  } else {
+    // No existing import, create a new one
+    const newImport = j.importDeclaration(
+      [j.importSpecifier(j.identifier('screen'))],
+      j.literal('@testing-library/react')
+    );
 
-      if (screenImport.size() === 0) {
-        // 'screen' is not imported, add it
-        testingLibraryImport
-          .get()
-          .node.specifiers.push(j.importSpecifier(j.identifier('screen')));
-      }
+    // find the first import statement, insert new import declaration before it
+    const firstImport = root.find(j.ImportDeclaration).at(0);
+    if (firstImport.size() > 0) {
+      firstImport.insertBefore(newImport);
     } else {
-      // No existing import, create a new one
-      const newImport = j.importDeclaration(
-        [j.importSpecifier(j.identifier('screen'))],
-        j.literal('@testing-library/react')
-      );
-
-      // find the first import statement, insert new import declaration before it
-      const firstImport = root.find(j.ImportDeclaration).at(0);
-      if (firstImport.size() > 0) {
-        firstImport.insertBefore(newImport);
-      } else {
-        // No existing import statements, insert at the top of the file
-        root.get().node.body.unshift(newImport);
-      }
+      // No existing import statements, insert at the top of the file
+      root.get().node.body.unshift(newImport);
     }
   }
 
