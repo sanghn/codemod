@@ -1,4 +1,13 @@
-module.exports = function (fileInfo, api) {
+import type {
+  API,
+  CallExpression,
+  FileInfo,
+  Identifier,
+  ObjectPattern,
+  ObjectProperty,
+} from 'jscodeshift';
+
+const transformer = (fileInfo: FileInfo, api: API) => {
   const j = api.jscodeshift;
 
   if (!/\.(spec|test)\.(js|ts)x?$/.test(fileInfo.path)) {
@@ -58,7 +67,19 @@ module.exports = function (fileInfo, api) {
     'queryByTitle',
   ];
 
-  let migrationAvailable = false;
+  const migrationAvailable = methodsToMigrate.some(
+    (methodName) =>
+      root
+        .find(j.CallExpression, {
+          callee: {
+            type: 'Identifier',
+            name: methodName,
+          },
+        })
+        .size() > 0
+  );
+
+  if (!migrationAvailable) return fileInfo.source;
 
   methodsToMigrate.forEach((methodName) => {
     root
@@ -69,19 +90,17 @@ module.exports = function (fileInfo, api) {
         },
       })
       .replaceWith((path) => {
-        migrationAvailable = true;
+        const calleeIdentifier = path.node.callee as Identifier;
 
         const screenIdentifier = j.identifier('screen');
         const memberExpression = j.memberExpression(
           screenIdentifier,
-          j.identifier(path.node.callee.name)
+          j.identifier(calleeIdentifier.name)
         );
 
         return j.callExpression(memberExpression, path.node.arguments);
       });
   });
-
-  if (!migrationAvailable) return fileInfo.source;
 
   // Remove destructured queries from render calls
   root
@@ -89,29 +108,40 @@ module.exports = function (fileInfo, api) {
       id: { type: 'ObjectPattern' },
       init: {
         type: 'CallExpression',
-        callee: { name: (name) => name !== 'within' },
+        callee: { name: (name: string) => name !== 'within' },
       },
     })
     .filter((path) => {
-      return path.node.id.properties.some((property) =>
-        methodsToMigrate.includes(property.key.name)
-      );
+      return (path.node.id as ObjectPattern).properties.some((property) => {
+        const prop = property as ObjectProperty;
+        return (
+          prop.key.type === 'Identifier' &&
+          methodsToMigrate.includes(prop.key.name)
+        );
+      });
     })
     .forEach((path) => {
-      const propertiesToRemove = path.node.id.properties.filter((property) =>
-        methodsToMigrate.includes(property.key.name)
-      );
+      const objectPattern = path.node.id as ObjectPattern;
+      const propertiesToRemove = objectPattern.properties.filter((property) => {
+        const prop = property as ObjectProperty;
+        return (
+          prop.key.type === 'Identifier' &&
+          methodsToMigrate.includes(prop.key.name)
+        );
+      });
 
       if (propertiesToRemove.length > 0) {
-        const newProperties = path.node.id.properties.filter(
+        const newProperties = objectPattern.properties.filter(
           (property) => !propertiesToRemove.includes(property)
         );
 
-        path.node.id.properties = newProperties;
+        objectPattern.properties = newProperties;
 
         if (newProperties.length === 0) {
           // Remove the entire destructured object if all properties are removed
-          const expressionStatement = j.expressionStatement(path.node.init);
+          const expressionStatement = j.expressionStatement(
+            path.node.init as CallExpression
+          );
           j(path.parentPath.parentPath).replaceWith(expressionStatement);
         }
       }
@@ -157,3 +187,7 @@ module.exports = function (fileInfo, api) {
 
   return root.toSource();
 };
+
+export const parser = 'tsx';
+
+export default transformer;
