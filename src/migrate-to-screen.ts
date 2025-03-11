@@ -1,5 +1,6 @@
 import type {
   API,
+  AwaitExpression,
   CallExpression,
   FileInfo,
   Identifier,
@@ -104,14 +105,23 @@ const transformer = (fileInfo: FileInfo, api: API) => {
 
   // Remove destructured queries from render calls
   root
-    .find(j.VariableDeclarator, {
-      id: { type: 'ObjectPattern' },
-      init: {
-        type: 'CallExpression',
-        callee: { name: (name: string) => name !== 'within' },
-      },
-    })
+    .find(j.VariableDeclarator)
     .filter((path) => {
+      if (path.node.id.type !== 'ObjectPattern') return false;
+
+      const isCallExpression =
+        path.node.init?.type === 'CallExpression' &&
+        path.node.init.callee.type === 'Identifier' &&
+        path.node.init.callee.name !== 'within';
+
+      const isAwaitExpression =
+        path.node.init?.type === 'AwaitExpression' &&
+        path.node.init.argument?.type === 'CallExpression' &&
+        path.node.init.argument.callee.type === 'Identifier' &&
+        path.node.init.argument.callee.name !== 'within';
+
+      if (!isCallExpression && !isAwaitExpression) return false;
+
       return (path.node.id as ObjectPattern).properties.some((property) => {
         const prop = property as ObjectProperty;
         return (
@@ -122,28 +132,37 @@ const transformer = (fileInfo: FileInfo, api: API) => {
     })
     .forEach((path) => {
       const objectPattern = path.node.id as ObjectPattern;
-      const propertiesToRemove = objectPattern.properties.filter((property) => {
-        const prop = property as ObjectProperty;
+      const leftOverProperties = objectPattern.properties.filter((property) => {
         return (
-          prop.key.type === 'Identifier' &&
-          methodsToMigrate.includes(prop.key.name)
+          property.type === 'ObjectProperty' &&
+          property.key.type === 'Identifier' &&
+          !methodsToMigrate.includes(property.key.name)
         );
       });
 
-      if (propertiesToRemove.length > 0) {
-        const newProperties = objectPattern.properties.filter(
-          (property) => !propertiesToRemove.includes(property)
+      if (leftOverProperties.length === objectPattern.properties.length) return;
+
+      // All properties are removed
+      if (leftOverProperties.length === 0) {
+        // Remove the entire destructured object
+        const variableDeclarationPath = path.parentPath.parentPath;
+
+        const expressionStatement = j.expressionStatement(
+          path.node.init as CallExpression | AwaitExpression
         );
 
-        objectPattern.properties = newProperties;
+        // Get leading comments
+        const leadingComments = variableDeclarationPath.node.leadingComments;
 
-        if (newProperties.length === 0) {
-          // Remove the entire destructured object if all properties are removed
-          const expressionStatement = j.expressionStatement(
-            path.node.init as CallExpression
-          );
-          j(path.parentPath.parentPath).replaceWith(expressionStatement);
+        // Attach leading comments to the new ExpressionStatement
+        if (leadingComments) {
+          expressionStatement.comments = leadingComments;
         }
+
+        j(path.parentPath.parentPath).replaceWith(expressionStatement);
+      } else {
+        // Remove the migrated properties
+        objectPattern.properties = leftOverProperties;
       }
     });
 
